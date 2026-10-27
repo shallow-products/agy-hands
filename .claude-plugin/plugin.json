@@ -1,0 +1,5 @@
+{
+  "name": "agy-hands",
+  "description": "Delegate well-scoped work from Claude Code to the Antigravity CLI (agy): Claude is the brain, agy is the hands.",
+  "version": "0.1.0"
+}

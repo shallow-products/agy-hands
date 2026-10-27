@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# agy-run - run one delegated task through the Antigravity CLI (agy) in print mode.
+#
+# usage: agy-run [--mode read-only|write] [--dir DIR] [--timeout SECONDS]
+#                   [--resume CONVERSATION_ID] [--model NAME] [--effort low|medium|high|xhigh|max]
+#                   "<task>"
+#
+# Prints agy's reply, then one machine-readable line:
+#   AGY_META conversation_id=<id> status=<done|partial|blocked|violation|failed> contract=<ok|violated>
+#
+# Exit codes:
+#   0  done / partial        13 reply broke the return contract
+#   2  usage error           20 blocked: agy left open questions (answer, then --resume)
+#   10 quota / rate limit    1  any other failure
+#   11 not authenticated
+#   12 timeout
+set -u
+
+mode=read-only
+dir=.
+timeout_s=0
+resume=""
+model=""
+effort=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mode)    mode="${2:-}"; shift 2 ;;
+    --dir)     dir="${2:-}"; shift 2 ;;
+    --timeout) timeout_s="${2:-}"; shift 2 ;;
+    --resume)  resume="${2:-}"; shift 2 ;;
+    --model)   model="${2:-}"; shift 2 ;;
+    --effort)  effort="${2:-}"; shift 2 ;;
+    --) shift; break ;;
+    -*) echo "agy-run: unknown option: $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+task="${1:-}"
+
+[ -n "$task" ] || { echo "agy-run: task is required" >&2; exit 2; }
+command -v agy >/dev/null 2>&1 || { echo "agy-run: agy not found on PATH" >&2; exit 2; }
+command -v jq  >/dev/null 2>&1 || { echo "agy-run: jq is required" >&2; exit 2; }
+[ -d "$dir" ] || { echo "agy-run: not a directory: $dir" >&2; exit 2; }
+
+case "$mode" in
+  read-only) agy_mode=plan ;;          # plans only; does not edit the workspace
+  write)     agy_mode=accept-edits ;;  # edits files without prompting
+  *) echo "agy-run: --mode must be read-only or write" >&2; exit 2 ;;
+esac
+
+read -r -d '' contract <<'EOF'
+Return your final reply in exactly this format, with nothing after the last block:
+
+===DIGEST===
+status: done | partial | blocked
+files_changed: <list, or none>
+decisions: <key decisions, one line each>
+===QUESTIONS===
+<only questions whose answer changes the result, at most 3, each with your default; or: none>
+===VERIFY===
+<what the caller must run or check to confirm this work>
+
+Rules: if a decision is ambiguous, do not guess; list it under QUESTIONS and set status to blocked.
+Keep bulky detail in files, not in this reply.
+EOF
+
+prompt="$task
+
+$contract"
+
+args=(-p "$prompt" --mode "$agy_mode" --output-format json --add-dir "$dir")
+[ "$timeout_s" != "0" ] && args+=(--print-timeout "${timeout_s}s")
+[ -n "$resume" ] && args+=(--conversation "$resume")
+[ -n "$model" ] && args+=(--model "$model")
+[ -n "$effort" ] && args+=(--effort "$effort")
+
+errf=$(mktemp)
+out=$(cd "$dir" && agy "${args[@]}" </dev/null 2>"$errf")
+rc=$?
+err=$(cat "$errf" 2>/dev/null); rm -f "$errf"
+
+meta() { echo "AGY_META conversation_id=${1:-unknown} status=$2 contract=$3"; }
+
+if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+  echo "$err" >&2
+  # exit-code mapping below is heuristic: agy exposes no documented error codes
+  if   printf '%s' "$err" | grep -qiE 'quota|rate.?limit|429|exhausted'; then meta "" failed ok; exit 10
+  elif printf '%s' "$err" | grep -qiE 'auth|sign.?in|log.?in|credential'; then meta "" failed ok; exit 11
+  fi
+  meta "" failed ok; exit 1
+fi
+
+cid=$(printf '%s' "$out" | jq -r '.conversation_id // "unknown"')
+agy_status=$(printf '%s' "$out" | jq -r '.status // ""')
+reply=$(printf '%s' "$out" | jq -r '.response // ""')
+
+printf '%s\n' "$reply"
+
+if [ "$agy_status" != "SUCCESS" ]; then
+  if   printf '%s' "$reply$err" | grep -qiE 'quota|rate.?limit|429|exhausted'; then meta "$cid" failed ok; exit 10
+  elif printf '%s' "$reply$err" | grep -qiE 'timed? ?out|timeout'; then meta "$cid" partial ok; exit 12
+  fi
+  meta "$cid" failed ok; exit 1
+fi
+
+if ! printf '%s' "$reply" | grep -q '^===DIGEST===' ; then
+  meta "$cid" violation violated; exit 13
+fi
+
+status=$(printf '%s' "$reply" | sed -n 's/^status:[[:space:]]*//p' | head -1 | tr -d '[:space:]')
+case "$status" in
+  done|partial) meta "$cid" "$status" ok; exit 0 ;;
+  blocked)      meta "$cid" blocked ok; exit 20 ;;
+  *)            meta "$cid" violation violated; exit 13 ;;
+esac
