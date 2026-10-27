@@ -12,6 +12,13 @@ Community project, not affiliated with Google or Anthropic. See [SECURITY.md](SE
 | `skills/agy-hands/SKILL.md` | when to delegate, how to brief, how to read results and failures |
 | `bin/agy-run` | wrapper around `agy -p`: read/write modes, resume, return contract, exit codes |
 
+## Install
+```
+/plugin marketplace add shallow-products/agy-hands
+/plugin install agy-hands@agy-hands
+```
+Or from a clone: `claude --plugin-dir ./agy-hands`.
+
 ## Requirements
 `agy` on `PATH` and signed in, `jq`, `bash`, `git`.
 

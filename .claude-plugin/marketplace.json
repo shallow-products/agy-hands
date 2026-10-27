@@ -1,0 +1,13 @@
+{
+  "name": "agy-hands",
+  "description": "Claude Code plugin that delegates work to the Antigravity CLI (agy).",
+  "owner": { "name": "shallow-products" },
+  "plugins": [
+    {
+      "name": "agy-hands",
+      "source": "./",
+      "description": "Delegate well-scoped work from Claude Code to the Antigravity CLI (agy).",
+      "author": { "name": "shallow-products" }
+    }
+  ]
+}
