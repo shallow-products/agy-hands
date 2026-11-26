@@ -7,13 +7,14 @@ Please report vulnerabilities privately through GitHub's
 
 ## What this plugin can do
 `agy-hands` lets Claude Code run the Antigravity CLI (`agy`) on your machine. In
-`write` mode `agy` edits files in its working directory without asking. Treat it
+`write` mode `agy` edits files in your current checkout without asking. Treat it
 like any agent with file access:
 
-- run write tasks only in the isolated git worktree the `agy-worker` subagent gets, and review the diff before merging;
-- do not run it in directories that contain credentials or production data;
-- the Bash guard (`hooks/guard-bash.py`) limits the `agy-worker` subagent to `agy-run`, `git status` and `git diff`. It protects against the subagent drifting off task, not against a hostile prompt;
-- briefs and agy replies are untrusted text: do not paste secrets into them.
+- review the diff after every write run, and use a separate git worktree (`--dir`) when changes must stay apart;
+- nothing in this plugin confines `agy` or Claude to a directory or a command set;
+- allowing `Bash(agy-run:*)` lets write runs start without a prompt;
+- do not run it in directories that contain credentials, personal data or production data;
+- briefs, anything `agy` reads, and its replies leave your machine or are untrusted text: do not put secrets in them.
 
 ## Supported versions
 Only the latest release on `main`.

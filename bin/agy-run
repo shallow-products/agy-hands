@@ -2,67 +2,85 @@
 # agy-run - run one delegated task through the Antigravity CLI (agy) in print mode.
 #
 # usage: agy-run [--mode read-only|write] [--dir DIR] [--timeout SECONDS]
-#                   [--resume CONVERSATION_ID] [--model NAME] [--effort low|medium|high|xhigh|max]
-#                   "<task>"
+#                [--resume CONVERSATION_ID] [--model NAME] [--effort low|medium|high|xhigh|max]
+#                (--brief-file FILE | "<task>")
 #
-# Prints agy's reply, then one machine-readable line:
-#   AGY_META conversation_id=<id> status=<done|partial|blocked|violation|failed> contract=<ok|violated>
+# --timeout defaults to 1800 seconds; 0 waits without limit.
+#
+# Prints agy's reply as is, then one machine-readable line:
+#   AGY_META conversation_id=<id> status=<done|partial|blocked|unknown|failed>
 #
 # Exit codes:
-#   0  done / partial        13 reply broke the return contract
-#   2  usage error           20 blocked: agy left open questions (answer, then --resume)
+#   0  done / partial        13 status unknown (read the reply and judge)
+#   2  usage error           20 blocked: agy has questions (answer, then --resume)
 #   10 quota / rate limit    1  any other failure
 #   11 not authenticated
 #   12 timeout
 set -u
 
+die() { echo "agy-run: $*" >&2; exit 2; }
+
 mode=read-only
 dir=.
-timeout_s=0
+timeout_s=1800
 resume=""
 model=""
 effort=""
+brief_file=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --mode)    mode="${2:-}"; shift 2 ;;
-    --dir)     dir="${2:-}"; shift 2 ;;
-    --timeout) timeout_s="${2:-}"; shift 2 ;;
-    --resume)  resume="${2:-}"; shift 2 ;;
-    --model)   model="${2:-}"; shift 2 ;;
-    --effort)  effort="${2:-}"; shift 2 ;;
+    --mode|--dir|--timeout|--resume|--model|--effort|--brief-file)
+      [ $# -ge 2 ] || die "$1 requires a value" ;;
+  esac
+  case "$1" in
+    --mode)       mode="$2"; shift 2 ;;
+    --dir)        dir="$2"; shift 2 ;;
+    --timeout)    timeout_s="$2"; shift 2 ;;
+    --resume)     resume="$2"; shift 2 ;;
+    --model)      model="$2"; shift 2 ;;
+    --effort)     effort="$2"; shift 2 ;;
+    --brief-file) brief_file="$2"; shift 2 ;;
     --) shift; break ;;
-    -*) echo "agy-run: unknown option: $1" >&2; exit 2 ;;
+    -*) die "unknown option: $1" ;;
     *) break ;;
   esac
 done
-task="${1:-}"
 
-[ -n "$task" ] || { echo "agy-run: task is required" >&2; exit 2; }
-command -v agy >/dev/null 2>&1 || { echo "agy-run: agy not found on PATH" >&2; exit 2; }
-command -v jq  >/dev/null 2>&1 || { echo "agy-run: jq is required" >&2; exit 2; }
-[ -d "$dir" ] || { echo "agy-run: not a directory: $dir" >&2; exit 2; }
+# options after the task would be silently ignored, so reject them
+if [ -n "$brief_file" ]; then
+  [ $# -eq 0 ] || die "give either --brief-file or a task argument, not both"
+  [ -f "$brief_file" ] && [ -r "$brief_file" ] || die "cannot read brief file: $brief_file"
+  task=$(cat -- "$brief_file")
+else
+  [ $# -le 1 ] || die "unexpected arguments after the task (options go first)"
+  task="${1:-}"
+fi
+
+[ -n "$task" ] || die "task is required"
+case "$timeout_s" in ''|*[!0-9]*) die "--timeout must be a number of seconds" ;; esac
+command -v agy >/dev/null 2>&1 || die "agy not found on PATH"
+command -v jq  >/dev/null 2>&1 || die "jq is required"
+[ -d "$dir" ] || die "not a directory: $dir"
+# absolute, so --add-dir still resolves after the cd below
+dir=$(CDPATH='' cd -- "$dir" && pwd) || die "cannot enter directory"
 
 case "$mode" in
   read-only) agy_mode=plan ;;          # plans only; does not edit the workspace
   write)     agy_mode=accept-edits ;;  # edits files without prompting
-  *) echo "agy-run: --mode must be read-only or write" >&2; exit 2 ;;
+  *) die "--mode must be read-only or write" ;;
 esac
 
 read -r -d '' contract <<'EOF'
-Return your final reply in exactly this format, with nothing after the last block:
-
-===DIGEST===
-status: done | partial | blocked
-files_changed: <list, or none>
-decisions: <key decisions, one line each>
-===QUESTIONS===
-<only questions whose answer changes the result, at most 3, each with your default; or: none>
-===VERIFY===
-<what the caller must run or check to confirm this work>
-
-Rules: if a decision is ambiguous, do not guess; list it under QUESTIONS and set status to blocked.
-Keep bulky detail in files, not in this reply.
+Reply in any format that suits the task. Keep the reply short; when you may edit
+files, put bulky detail in files.
+If a decision would change the result and the task does not settle it, do not
+guess: ask the question in your reply and use the status blocked. Otherwise
+proceed and mention the choice you made.
+End the reply with one line, "STATUS: <state>", where <state> is one of:
+  done    - the completion criteria are met
+  partial - some work remains; say what
+  blocked - you need an answer before the result can be right; include the questions
 EOF
 
 prompt="$task
@@ -70,7 +88,7 @@ prompt="$task
 $contract"
 
 args=(-p "$prompt" --mode "$agy_mode" --output-format json --add-dir "$dir")
-[ "$timeout_s" != "0" ] && args+=(--print-timeout "${timeout_s}s")
+[ "$timeout_s" -ne 0 ] && args+=(--print-timeout "${timeout_s}s")
 [ -n "$resume" ] && args+=(--conversation "$resume")
 [ -n "$model" ] && args+=(--model "$model")
 [ -n "$effort" ] && args+=(--effort "$effort")
@@ -80,37 +98,43 @@ out=$(cd "$dir" && agy "${args[@]}" </dev/null 2>"$errf")
 rc=$?
 err=$(cat "$errf" 2>/dev/null); rm -f "$errf"
 
-meta() { echo "AGY_META conversation_id=${1:-unknown} status=$2 contract=$3"; }
+finish() { echo "AGY_META conversation_id=${cid:-unknown} status=$1"; exit "$2"; }
 
-if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
-  echo "$err" >&2
-  # exit-code mapping below is heuristic: agy exposes no documented error codes
-  if   printf '%s' "$err" | grep -qiE 'quota|rate.?limit|429|exhausted'; then meta "" failed ok; exit 10
-  elif printf '%s' "$err" | grep -qiE 'auth|sign.?in|log.?in|credential'; then meta "" failed ok; exit 11
+# failure kinds are matched on error text: agy exposes no documented error codes
+fail() {
+  if   printf '%s' "$1" | grep -qiE 'quota|rate.?limit|429|exhausted'; then finish failed 10
+  elif printf '%s' "$1" | grep -qiE 'timed? ?out|timeout'; then finish partial 12
+  elif printf '%s' "$1" | grep -qiE 'unauthenticated|not authenticated|auth(entication|orization)? (failed|required|error)|sign.?in|log.?in|credential'; then finish failed 11
   fi
-  meta "" failed ok; exit 1
+  finish failed 1
+}
+
+cid="$resume"
+if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
+  [ -n "$out" ] && printf '%s\n' "$out"
+  [ -n "$err" ] && printf '%s\n' "$err" >&2
+  fail "$err"
 fi
 
-cid=$(printf '%s' "$out" | jq -r '.conversation_id // "unknown"')
+cid=$(printf '%s' "$out" | jq -r '.conversation_id // empty')
 agy_status=$(printf '%s' "$out" | jq -r '.status // ""')
 reply=$(printf '%s' "$out" | jq -r '.response // ""')
 
 printf '%s\n' "$reply"
 
 if [ "$agy_status" != "SUCCESS" ]; then
-  if   printf '%s' "$reply$err" | grep -qiE 'quota|rate.?limit|429|exhausted'; then meta "$cid" failed ok; exit 10
-  elif printf '%s' "$reply$err" | grep -qiE 'timed? ?out|timeout'; then meta "$cid" partial ok; exit 12
-  fi
-  meta "$cid" failed ok; exit 1
+  [ -n "$err" ] && printf '%s\n' "$err" >&2
+  echo "agy-run: agy exited $rc with status '${agy_status}'" >&2
+  fail "$reply $err $agy_status"
 fi
 
-if ! printf '%s' "$reply" | grep -q '^===DIGEST===' ; then
-  meta "$cid" violation violated; exit 13
-fi
+# the last status line wins; case, markdown decoration and a trailing period are ignored
+status=$(printf '%s\n' "$reply" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed -nE \
+  's/^[[:space:]*_`#>-]*status[[:space:]*_`]*(:|：)[[:space:]*_`]*(done|partial|blocked)([[:space:]*_`.!]|。)*$/\2/p' \
+  | tail -n 1)
 
-status=$(printf '%s' "$reply" | sed -n 's/^status:[[:space:]]*//p' | head -1 | tr -d '[:space:]')
 case "$status" in
-  done|partial) meta "$cid" "$status" ok; exit 0 ;;
-  blocked)      meta "$cid" blocked ok; exit 20 ;;
-  *)            meta "$cid" violation violated; exit 13 ;;
+  done|partial) finish "$status" 0 ;;
+  blocked)      finish blocked 20 ;;
+  *)            finish unknown 13 ;;
 esac
