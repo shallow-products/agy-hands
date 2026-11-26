@@ -7,3 +7,5 @@ Issues and pull requests are welcome. Keep changes small and focused.
 - Scripts must stay dependency-free beyond `bash`, `jq` and `git`.
 - Check before opening a PR: `bash -n bin/agy-run` and a manual run of `agy-run` in `read-only` mode.
 - For security issues, follow [SECURITY.md](SECURITY.md) instead of opening an issue.
+
+Run `bash tests/agy-run.test.sh` after changing `bin/agy-run`. It uses a stub `agy` and sends nothing anywhere.

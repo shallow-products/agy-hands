@@ -19,7 +19,8 @@ Do it yourself:
 
 ## Limits
 - agy does not have this conversation, your MCP servers, or your skills.
-- It may be unable to run commands such as tests in non-interactive mode. Run them yourself.
+- Unless the user's agy settings allow them, terminal commands are denied, and a denial ends the run with an empty reply. Run tests yourself.
+- It may have no tool to list or search directories. Name every file in `Target` (get the list with `git ls-files` or a search first).
 - Whatever agy reads is sent to an external service. Do not delegate work that touches secrets, personal data, or directories the user would not share.
 
 ## Brief
@@ -27,18 +28,22 @@ agy only knows the brief. Write it to a temporary file outside the repository:
 
 ```
 Goal:        <one sentence>
-Target:      <files/dirs, relative paths>
+Target:      <file paths, relative>
 Done when:   <observable criteria, e.g. a test passes>
 Off-limits:  <what must not change>
-Rules:       <project rules that apply to this task>
+Rules:       <rules for this task that no attached file covers, or none>
 ```
 
-`Rules` is required: agy may not read `CLAUDE.md`. Copy in the rules that bear on the task (security, style, language, testing), or write `none`. Do not paste whole instruction files, and leave out personal details.
+`agy-run` attaches every `CLAUDE.md` and `.claude/CLAUDE.md` from the working directory and its parents below `$HOME` (and from the main checkout of a linked worktree), and lists them on stderr. Do not copy those into the brief.
+- Not attached: `~/.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, `@` imports, memory. Put what bears on the task into `Rules`, leaving out personal details.
+- Attached files leave your machine whole. If one holds secrets or personal data, do not delegate.
 
 Decide the design yourself first; the brief carries decisions, not open problems.
 
 ## Running
 Call `agy-run` with Bash and `run_in_background: true`, keep working, and read the output when you are notified.
+
+Progress goes to stderr while agy works: the conversation id, then one line per tool call or tool failure. Read the background output to check on a run. Silence between lines is normal while agy thinks.
 
 ```
 agy-run --mode read-only --brief-file <file>   # analysis, research, review
@@ -72,7 +77,7 @@ To resume, put the answers in a new brief file and run with the same `--mode` an
 ## Failures
 | exit | meaning | do |
 |---|---|---|
-| 1 | other failure | read the error; check for partial edits before retrying |
+| 1 | other failure, or `--resume` id not found (agy answered without the history) | read the error; check for partial edits before retrying |
 | 2 | usage error | fix the command |
 | 10 | quota / rate limit | use a normal subagent with the same brief, do it yourself, or wait |
 | 11 | not signed in | ask the user to run `agy` once and sign in |

@@ -6,8 +6,10 @@
 #                (--brief-file FILE | "<task>")
 #
 # --timeout defaults to 1800 seconds; 0 waits without limit.
+# CLAUDE.md files from DIR and its parents (below $HOME) are added to the prompt.
 #
-# Prints agy's reply as is, then one machine-readable line:
+# While agy runs, progress (conversation id, tool calls) goes to stderr.
+# Then prints agy's reply as is, and one machine-readable line:
 #   AGY_META conversation_id=<id> status=<done|partial|blocked|unknown|failed>
 #
 # Exit codes:
@@ -66,12 +68,22 @@ command -v jq  >/dev/null 2>&1 || die "jq is required"
 dir=$(CDPATH='' cd -- "$dir" && pwd) || die "cannot enter directory"
 
 case "$mode" in
-  read-only) agy_mode=plan ;;          # plans only; does not edit the workspace
-  write)     agy_mode=accept-edits ;;  # edits files without prompting
+  read-only) agy_mode=plan             # does not edit the workspace
+             mode_note="This run is read-only: do not create or edit any file. Put your whole answer
+in the reply." ;;
+  write)     agy_mode=accept-edits     # edits files without prompting
+             mode_note="" ;;
   *) die "--mode must be read-only or write" ;;
 esac
 
 read -r -d '' contract <<'EOF'
+This run is headless: nobody can approve a plan. Do not write an implementation
+plan artifact or wait for approval; carry out the task now.
+Do not run terminal commands (not even ls or grep) unless the task asks for one:
+they are usually denied here, and a denial ends the run with no reply. Read and
+edit files by path with your file tools. If you cannot find the files you need
+without a command, ask for their paths and use the status blocked.
+Do not start subagents or background tasks: the run ends when your turn ends.
 Reply in any format that suits the task. Keep the reply short; when you may edit
 files, put bulky detail in files.
 If a decision would change the result and the task does not settle it, do not
@@ -83,40 +95,130 @@ End the reply with one line, "STATUS: <state>", where <state> is one of:
   blocked - you need an answer before the result can be right; include the questions
 EOF
 
+# CLAUDE.md files are attached by the wrapper, so rules do not depend on the brief.
+# Walks up from the working directory (and from the main checkout of a linked
+# worktree), stopping before $HOME. Personal files (~/.claude/CLAUDE.md,
+# CLAUDE.local.md) are never attached: the prompt leaves this machine.
+home=$(CDPATH='' cd -- "${HOME:-/}" 2>/dev/null && pwd -P)
+rule_files=""   # newline separated, outermost first
+collect_rules() {
+  local d="$1" f found=""
+  while [ "$d" != / ] && [ "$d" != . ] && [ "$d" != "$home" ]; do
+    for f in "$d/.claude/CLAUDE.md" "$d/CLAUDE.md"; do
+      [ -f "$f" ] || continue
+      case $'\n'"$rule_files$found" in *$'\n'"$f"$'\n'*) continue ;; esac
+      found="$f"$'\n'"$found"
+    done
+    d=$(dirname -- "$d")
+  done
+  rule_files="$rule_files$found"
+}
+
+real_dir=$(CDPATH='' cd -- "$dir" && pwd -P) || die "cannot enter directory"
+if common=$(git -C "$real_dir" rev-parse --git-common-dir 2>/dev/null) &&
+   common=$(CDPATH='' cd -- "$real_dir" && cd -- "$common" && pwd -P) &&
+   [ "${common##*/}" = .git ]; then
+  collect_rules "${common%/.git}"
+fi
+collect_rules "$real_dir"
+
+rules=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  # fail closed: never run without a rule file that exists
+  body=$(cat -- "$f") || die "cannot read rules file: $f"
+  label="$f"
+  case "$f" in "$home"/*) label="~${f#"$home"}" ;; esac
+  rules="$rules
+--- $label ---
+$body
+"
+  echo "agy-run: attached rules: $label" >&2
+done <<< "$rule_files"
+
+if [ -n "$rules" ]; then
+  rules="Project rules (CLAUDE.md files, outermost first). Follow them even where the task
+does not mention them. If the task conflicts with them, use the status blocked.
+Also read any CLAUDE.md in subdirectories you work in, and files they import with @.
+$rules
+--- end of project rules ---
+
+"
+else
+  echo "agy-run: no CLAUDE.md found" >&2
+fi
+
 prompt="$task
 
-$contract"
+$rules$contract${mode_note:+
+$mode_note}"
 
-args=(-p "$prompt" --mode "$agy_mode" --output-format json --add-dir "$dir")
+args=(-p "$prompt" --mode "$agy_mode" --output-format stream-json --add-dir "$dir")
 [ "$timeout_s" -ne 0 ] && args+=(--print-timeout "${timeout_s}s")
 [ -n "$resume" ] && args+=(--conversation "$resume")
 [ -n "$model" ] && args+=(--model "$model")
 [ -n "$effort" ] && args+=(--effort "$effort")
 
-errf=$(mktemp)
-out=$(cd "$dir" && agy "${args[@]}" </dev/null 2>"$errf")
+tmp=$(mktemp -d) || die "cannot create a temporary directory"
+agy_pid=""
+cleanup() {
+  [ -n "$agy_pid" ] && kill "$agy_pid" 2>/dev/null
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+mkfifo "$tmp/pipe" || die "cannot create a pipe"
+
+# one short line per conversation start, tool call and tool error
+progress() {
+  jq -rR --unbuffered --arg dir "$dir/" '
+    fromjson? | objects
+    | if .event == "init" then "agy-run: conversation \(.conversation_id)"
+      elif .event == "step_update" then .step_update
+        | select(.step_type == "tool" and (.state == "ACTIVE" or .state == "ERROR"))
+        | ([.tool_info.parameters? | objects | .[] | strings][0] // ""
+           | ltrimstr($dir) | gsub("\\s+"; " ") | .[0:120]) as $arg
+        | "agy-run: step \(.step_index) \(.tool_name)\(if .state == "ERROR" then " failed" else "" end) \($arg)"
+      else empty end' >&2
+}
+
+# agy runs in the background so that a signal reaches the traps while it works
+tee "$tmp/stream" < "$tmp/pipe" | progress &
+reader=$!
+( exec > "$tmp/pipe"; cd "$dir" && exec agy "${args[@]}" </dev/null 2>"$tmp/err" ) &
+agy_pid=$!
+wait "$agy_pid"
 rc=$?
-err=$(cat "$errf" 2>/dev/null); rm -f "$errf"
+agy_pid=""
+wait "$reader"
+err=$(cat "$tmp/err" 2>/dev/null)
+out=$(jq -cR 'fromjson? | objects | select(.event == "result") | .result' "$tmp/stream" | tail -n 1)
+# known even when the run ends without a result
+started=$(jq -rR 'fromjson? | objects | select(.event == "init") | .conversation_id // empty' "$tmp/stream" | head -n 1)
 
 finish() { echo "AGY_META conversation_id=${cid:-unknown} status=$1"; exit "$2"; }
 
-# failure kinds are matched on error text: agy exposes no documented error codes
+# failure kinds are matched on error text: agy exposes no documented error codes.
+# Pass only agy's error output, never the reply, and match whole words.
 fail() {
-  if   printf '%s' "$1" | grep -qiE 'quota|rate.?limit|429|exhausted'; then finish failed 10
-  elif printf '%s' "$1" | grep -qiE 'timed? ?out|timeout'; then finish partial 12
-  elif printf '%s' "$1" | grep -qiE 'unauthenticated|not authenticated|auth(entication|orization)? (failed|required|error)|sign.?in|log.?in|credential'; then finish failed 11
+  has() { printf '%s' "$2" | grep -qiE "(^|[^[:alnum:]])($1)([^[:alnum:]]|$)"; }
+  if   has 'quota|rate.?limit(ed)?|429|(resource.)?exhausted' "$1"; then finish failed 10
+  elif has 'timed?.?out|timeout|deadline.exceeded' "$1"; then finish partial 12
+  elif has 'unauthenticated|not authenticated|auth(entication|orization)? (failed|required|error)|sign.?in|log.?in|credentials?' "$1"; then finish failed 11
   fi
   finish failed 1
 }
 
-cid="$resume"
-if ! printf '%s' "$out" | jq -e 'type == "object"' >/dev/null 2>&1; then
-  [ -n "$out" ] && printf '%s\n' "$out"
+cid="${started:-$resume}"
+if [ -z "$out" ]; then
+  cat "$tmp/stream"
   [ -n "$err" ] && printf '%s\n' "$err" >&2
+  echo "agy-run: agy exited $rc without a result" >&2
   fail "$err"
 fi
 
-cid=$(printf '%s' "$out" | jq -r '.conversation_id // empty')
+cid=$(printf '%s' "$out" | jq -r --arg d "$cid" '.conversation_id // $d')
 agy_status=$(printf '%s' "$out" | jq -r '.status // ""')
 reply=$(printf '%s' "$out" | jq -r '.response // ""')
 
@@ -125,8 +227,19 @@ printf '%s\n' "$reply"
 if [ "$agy_status" != "SUCCESS" ]; then
   [ -n "$err" ] && printf '%s\n' "$err" >&2
   echo "agy-run: agy exited $rc with status '${agy_status}'" >&2
-  fail "$reply $err $agy_status"
+  fail "$(printf '%s' "$out" | jq -r '.error // ""')
+$err
+$agy_status"
 fi
+
+# agy starts a new conversation, and still succeeds, when the id is not found
+if [ -n "$resume" ] && [ "$cid" != "$resume" ]; then
+  echo "agy-run: could not resume $resume; agy answered in a new conversation without that history" >&2
+  finish failed 1
+fi
+
+denied=$(printf '%s' "$out" | jq -r '[.denied_actions[]?.action] | unique | join(", ")')
+[ -z "$denied" ] || echo "agy-run: agy was denied permission for: $denied" >&2
 
 # the last status line wins; case, markdown decoration and a trailing period are ignored
 status=$(printf '%s\n' "$reply" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed -nE \

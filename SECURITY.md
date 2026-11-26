@@ -14,6 +14,7 @@ like any agent with file access:
 - nothing in this plugin confines `agy` or Claude to a directory or a command set;
 - allowing `Bash(agy-run:*)` lets write runs start without a prompt;
 - do not run it in directories that contain credentials, personal data or production data;
+- `CLAUDE.md` files in the working directory and its parents below `$HOME` are sent with every task; the rules in them are instructions to `agy`, not an enforced limit;
 - briefs, anything `agy` reads, and its replies leave your machine or are untrusted text: do not put secrets in them.
 
 ## Supported versions
