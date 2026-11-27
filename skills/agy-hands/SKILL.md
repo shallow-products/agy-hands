@@ -35,7 +35,7 @@ Rules:       <rules for this task that no attached file covers, or none>
 ```
 
 `agy-run` attaches every `CLAUDE.md` and `.claude/CLAUDE.md` from the working directory and its parents below `$HOME` (and from the main checkout of a linked worktree), and lists them on stderr. Do not copy those into the brief.
-- Not attached: `~/.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, `@` imports, memory. Put what bears on the task into `Rules`, leaving out personal details.
+- Not attached: `~/.claude/CLAUDE.md` (except when the working directory is `~/.claude` or below it), `CLAUDE.local.md`, `.claude/rules/`, `@` imports, memory. Put what bears on the task into `Rules`, leaving out personal details.
 - Attached files leave your machine whole. If one holds secrets or personal data, do not delegate.
 
 Decide the design yourself first; the brief carries decisions, not open problems.

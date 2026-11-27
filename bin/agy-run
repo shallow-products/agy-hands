@@ -97,8 +97,9 @@ EOF
 
 # CLAUDE.md files are attached by the wrapper, so rules do not depend on the brief.
 # Walks up from the working directory (and from the main checkout of a linked
-# worktree), stopping before $HOME. Personal files (~/.claude/CLAUDE.md,
-# CLAUDE.local.md) are never attached: the prompt leaves this machine.
+# worktree), stopping before $HOME. CLAUDE.local.md is never attached, and
+# ~/.claude/CLAUDE.md only when the working directory is ~/.claude or below it:
+# the prompt leaves this machine.
 home=$(CDPATH='' cd -- "${HOME:-/}" 2>/dev/null && pwd -P)
 rule_files=""   # newline separated, outermost first
 collect_rules() {

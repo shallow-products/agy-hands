@@ -36,7 +36,7 @@ Claude calls `agy-run` through Bash, which Claude Code asks you to approve. To l
 - **Status only.** agy replies in free text and ends with `STATUS: done`, `partial` or `blocked`. A reply without one is reported as `unknown`, not discarded. Answer `blocked` questions and resume with `--resume`.
 - **Modes.** `read-only` maps to agy `--mode plan`; `write` maps to `--mode accept-edits`. Neither uses `--dangerously-skip-permissions`.
 - **Shared checkout.** agy works where Claude works. Use a separate worktree and `--dir` for parallel writes.
-- **Rules travel with the task.** `agy-run` adds the `CLAUDE.md` and `.claude/CLAUDE.md` files of the working directory and its parents below `$HOME` to every prompt. `~/.claude/CLAUDE.md` and `CLAUDE.local.md` are left out. agy is asked to follow them; nothing enforces it.
+- **Rules travel with the task.** `agy-run` adds the `CLAUDE.md` and `.claude/CLAUDE.md` files of the working directory and its parents below `$HOME` to every prompt. `CLAUDE.local.md` is left out, and so is `~/.claude/CLAUDE.md` unless the working directory is `~/.claude` or below it. agy is asked to follow them; nothing enforces it.
 - **Progress.** `agy-run` reads agy's event stream and prints the conversation id and each tool call to stderr.
 - **Headless.** agy is told not to write a plan for approval, run commands or start subagents. Unless your agy settings allow them, commands are denied, and agy may have no tool to list or search directories, so briefs name the files.
 - **Verification stays with the caller.**
