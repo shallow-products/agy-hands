@@ -1,7 +1,11 @@
 {
   "name": "agy-hands",
+  "displayName": "agy-hands",
   "description": "Delegate well-scoped work from Claude Code to the Antigravity CLI (agy): Claude is the brain, agy is the hands.",
-  "version": "0.3.0",
-  "author": { "name": "shallow-products" },
-  "license": "MIT"
+  "version": "0.3.1",
+  "author": { "name": "shallow-products", "url": "https://github.com/shallow-products" },
+  "homepage": "https://github.com/shallow-products/agy-hands#readme",
+  "repository": "https://github.com/shallow-products/agy-hands",
+  "license": "MIT",
+  "keywords": ["antigravity", "agy", "delegation", "subagent"]
 }
